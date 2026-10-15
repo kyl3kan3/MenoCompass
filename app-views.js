@@ -520,7 +520,8 @@ let stageStep = 0;
 function stageSheetBody(){
   const p = DB.profile;
   if(p.stage && stageStep===0 && !Object.keys(stageAns).length){
-    const res = p.stageResult||{};
+    const answers = safeStageAnswers(p.stageAnswers);
+    const res = answers ? stageResult(answers) : {body:'',flags:[]};
     return `<div class="callout ok"><span class="ctitle">${esc(p.stage)}</span>${res.body||''}</div>
     ${(res.flags||[]).map(f=>'<div class="callout warn">'+f+'</div>').join('')}
     ${STAGE_CAVEAT}
@@ -530,7 +531,7 @@ function stageSheetBody(){
   if(stageStep>=qs.length){
     const res = stageResult(stageAns);
     DB.profile.stage = res.label; DB.profile.stageAnswers = Object.assign({},stageAns);
-    DB.profile.stageResult = {body:res.body, flags:res.flags};
+    // Stage HTML is derived from trusted content, never persisted in backups.
     save();
     return `<div class="callout ok"><span class="ctitle">${esc(res.label)}</span>${res.body}</div>
     ${res.flags.map(f=>'<div class="callout warn">'+f+'</div>').join('')}

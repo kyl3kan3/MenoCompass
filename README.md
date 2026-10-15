@@ -178,3 +178,7 @@ The app provides general health education compiled from published clinical guide
 not diagnose, treat or prescribe. It is not a medical device and has not been reviewed by any
 regulator. If you plan to distribute it publicly, get the disclaimer and privacy language
 reviewed for your jurisdiction.
+
+## Backup security
+
+Backup restores now rebuild an allowlisted schema and discard presentation HTML and unknown fields. Stage results are recomputed from valid saved quiz answers; old backups with only a saved stage label may require retaking the stage quiz. Daily entries, notes, valid scores and settings are preserved. The checked-in standalone index contains the same security changes, and the service-worker cache version is bumped. Run `node --test security.test.cjs` for offline backup regression tests.
