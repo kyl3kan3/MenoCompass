@@ -1,6 +1,6 @@
 /* Meno Compass service worker — offline-first shell cache.
    Bump CACHE when you change any cached file. */
-const CACHE = 'meno-compass-v2';
+const CACHE = 'meno-compass-v3-backup-schema';
 const ASSETS = [
   './',
   './index.html',

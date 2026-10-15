@@ -1693,28 +1693,62 @@ let DB = null;
 
 function load(){
   const raw = Store.read();
-  DB = raw && typeof raw==='object' ? migrate(raw) : blankDB();
+  try{ DB = raw && typeof raw==='object' ? migrate(raw) : blankDB(); }catch(e){ DB=blankDB(); }
   DB.meta = DB.meta || {}; DB.meta.lastOpen = todayISO();
 }
+function backupRecord(v){ return v!==null && typeof v==='object' && !Array.isArray(v); }
+function backupText(v,n){ return typeof v==='string'?v.slice(0,n):''; }
+function backupNumber(v,min,max){ return typeof v==='number' && Number.isFinite(v) && v>=min && v<=max?v:null; }
+function backupDate(v){
+  if(typeof v!=='string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return '';
+  const date=new Date(v+'T00:00:00Z');
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0,10)===v?v:'';
+}
+function backupEnum(v,values,fallback){ return values.includes(v)?v:fallback; }
+function safeStageAnswers(raw){
+  if(!backupRecord(raw)) return null;
+  const answers={};
+  STAGE_Q.forEach(q=>{ if(q.a.some(option=>option.v===raw[q.id])) answers[q.id]=raw[q.id]; });
+  return stageQueue(answers).every(q=>Object.hasOwn(answers,q.id))?answers:null;
+}
 function migrate(d){
-  const base = blankDB();
-  const out = Object.assign(base, d);
-  out.profile = Object.assign(base.profile, d.profile||{});
-  /* v1 stored uterus and ovaries as one field, which wrongly implied you
-     could not have a hysterectomy and keep your ovaries. Split them. */
-  const legacy = {
-    intact: {uterus:'intact',  ovaries:'kept'},
-    hyst:   {uterus:'hyst',    ovaries:'unknown'},
-    oophor: {uterus:'intact',  ovaries:'both'},
-    both:   {uterus:'hyst',    ovaries:'both'}
-  }[out.profile.uterus];
-  if(legacy && (!d.profile || d.profile.ovaries==null)){
-    out.profile.uterus = legacy.uterus;
-    out.profile.ovaries = legacy.ovaries;
-  }
-  out.entries = d.entries||{}; out.screening = d.screening||{};
-  out.scores = Array.isArray(d.scores)?d.scores:[];
-  out.v = SCHEMA_V;
+  if(!backupRecord(d) || d.v!==SCHEMA_V || !backupRecord(d.entries)) throw new Error('Invalid backup schema');
+  const out=blankDB(), raw=backupRecord(d.profile)?d.profile:{}, p=out.profile;
+  p.name=backupText(raw.name,160);
+  p.birthYear=backupNumber(raw.birthYear,1900,new Date().getFullYear());
+  p.region=backupEnum(raw.region,['us','uk','other'],'us');
+  p.units=backupEnum(raw.units,['imperial','metric'],'imperial');
+  p.lastPeriod=backupDate(raw.lastPeriod); p.surgeryDate=backupDate(raw.surgeryDate);
+  p.uterus=backupEnum(raw.uterus,['unknown','intact','hyst','ablation'],'unknown');
+  p.ovaries=backupEnum(raw.ovaries,['unknown','kept','one','both'],'unknown');
+  const legacy={intact:{uterus:'intact',ovaries:'kept'},hyst:{uterus:'hyst',ovaries:'unknown'},oophor:{uterus:'intact',ovaries:'both'},both:{uterus:'hyst',ovaries:'both'}};
+  if(raw.ovaries==null && Object.hasOwn(legacy,raw.uterus)) Object.assign(p,legacy[raw.uterus]);
+  p.bone=backupEnum(raw.bone,['unknown','normal','osteopenia','osteoporosis','fracture'],'unknown');
+  p.proteinGpk=backupEnum(raw.proteinGpk,[1,1.2,1.4,1.6],1.2);
+  p.weightGoal=backupNumber(raw.weightGoal,0,1000); p.waistGoal=backupNumber(raw.waistGoal,0,1000);
+  p.theme=backupEnum(raw.theme,['auto','light','dark'],'auto'); p.onboarded=raw.onboarded===true;
+  // Never restore executable presentation HTML. Recreate it from validated answers.
+  p.stageAnswers=safeStageAnswers(raw.stageAnswers);
+  p.stage=p.stageAnswers?stageResult(p.stageAnswers).label:null;
+  Object.keys(d.entries).filter(backupDate).sort().slice(-10000).forEach(date=>{
+    const rawEntry=d.entries[date]; if(!backupRecord(rawEntry)) return;
+    const e={sym:{},act:{},nut:{}};
+    ['hf','ns','inBedH','sleepH','wt','waist'].forEach(k=>{ const n=backupNumber(rawEntry[k],0,10000); if(n!==null)e[k]=n; });
+    e.bleed=backupEnum(rawEntry.bleed,['none','spotting','light','moderate','heavy'],'');
+    e.notes=backupText(rawEntry.notes,10000);
+    const sym=backupRecord(rawEntry.sym)?rawEntry.sym:{};
+    SYMS.forEach(s=>{const n=backupNumber(sym[s.k],0,4);if(n!==null)e.sym[s.k]=n;});
+    const act=backupRecord(rawEntry.act)?rawEntry.act:{},nut=backupRecord(rawEntry.nut)?rawEntry.nut:{};
+    ['res','bal','pf'].forEach(k=>{if(typeof act[k]==='boolean')e.act[k]=act[k];});
+    const aero=backupNumber(act.aero,0,1440);if(aero!==null)e.act.aero=aero;
+    ['prot','cal','fib'].forEach(k=>{if(typeof nut[k]==='boolean')e.nut[k]=nut[k];});
+    ['alc','caf'].forEach(k=>{const n=backupNumber(nut[k],0,1000);if(n!==null)e.nut[k]=n;});
+    out.entries[date]=e;
+  });
+  if(backupRecord(d.screening)) SCREENING.forEach(s=>{const raw=d.screening[s.id];if(backupRecord(raw)&&backupDate(raw.last))out.screening[s.id]={last:backupDate(raw.last)};});
+  if(Array.isArray(d.scores)) out.scores=d.scores.filter(s=>backupRecord(s)&&backupDate(s.date)&&['phq9','gad7'].includes(s.type)&&backupNumber(s.score,0,27)!==null).slice(-1000).map(s=>({date:s.date,type:s.type,score:s.score,band:backupText(s.band,80)}));
+  if(backupRecord(d.trigger)&&backupDate(d.trigger.start))out.trigger={active:d.trigger.active===true,item:backupText(d.trigger.item,160),start:d.trigger.start};
+  if(backupRecord(d.meta))out.meta={created:backupDate(d.meta.created)||todayISO(),lastOpen:backupDate(d.meta.lastOpen)||todayISO()};
   return out;
 }
 let saveTimer=null, dirty=false;
@@ -2680,7 +2714,8 @@ let stageStep = 0;
 function stageSheetBody(){
   const p = DB.profile;
   if(p.stage && stageStep===0 && !Object.keys(stageAns).length){
-    const res = p.stageResult||{};
+    const answers = safeStageAnswers(p.stageAnswers);
+    const res = answers ? stageResult(answers) : {body:'',flags:[]};
     return `<div class="callout ok"><span class="ctitle">${esc(p.stage)}</span>${res.body||''}</div>
     ${(res.flags||[]).map(f=>'<div class="callout warn">'+f+'</div>').join('')}
     ${STAGE_CAVEAT}
@@ -2690,7 +2725,7 @@ function stageSheetBody(){
   if(stageStep>=qs.length){
     const res = stageResult(stageAns);
     DB.profile.stage = res.label; DB.profile.stageAnswers = Object.assign({},stageAns);
-    DB.profile.stageResult = {body:res.body, flags:res.flags};
+    // Stage HTML is derived from trusted content, never persisted in backups.
     save();
     return `<div class="callout ok"><span class="ctitle">${esc(res.label)}</span>${res.body}</div>
     ${res.flags.map(f=>'<div class="callout warn">'+f+'</div>').join('')}
